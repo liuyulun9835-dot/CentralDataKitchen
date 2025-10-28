@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CentralDataKitchen ATAS 1m Bar",
+  "description": "Right-closed minute bars exported by CentralDataKitchen ATAS Bar1mExporter (interval [minute_open, minute_close])",
+  "type": "object",
+  "required": [
+    "timestamp",
+    "timestamp_utc",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "exporter_version",
+    "schema_version"
+  ],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Minute close timestamp in ISO8601 UTC (right-closed boundary)."
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Duplicate UTC timestamp for downstream compatibility."
+    },
+    "open": {
+      "type": "number"
+    },
+    "high": {
+      "type": "number"
+    },
+    "low": {
+      "type": "number"
+    },
+    "close": {
+      "type": "number"
+    },
+    "volume": {
+      "type": "number"
+    },
+    "cvd": {
+      "type": ["number", "null"],
+      "description": "Cumulative volume delta if available."
+    },
+    "vah": {
+      "type": ["number", "null"],
+      "description": "Value area high if available."
+    },
+    "val": {
+      "type": ["number", "null"],
+      "description": "Value area low if available."
+    },
+    "poc": {
+      "type": ["number", "null"],
+      "description": "Point of control if available."
+    },
+    "bar_vpo_price": {
+      "type": ["number", "null"],
+      "description": "Volume profile optimal price for the bar."
+    },
+    "bar_vpo_vol": {
+      "type": ["number", "null"],
+      "description": "Volume profile optimal volume for the bar."
+    },
+    "bar_vpo_loc": {
+      "type": ["number", "null"],
+      "description": "Volume profile optimal location for the bar."
+    },
+    "bar_vpo_side": {
+      "type": ["string", "null"],
+      "description": "Volume profile side (e.g. buy/sell)."
+    },
+    "exporter_version": {
+      "type": "string",
+      "const": "6.3"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "bar_1m.v6_3"
+    }
+  },
+  "additionalProperties": false
+}
