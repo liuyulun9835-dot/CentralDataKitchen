@@ -24,7 +24,12 @@ internal sealed class TickExporterCore : IDisposable
     public int HeartbeatEveryMs { get; set; } = 5000;
     public bool PartitionByHour { get; set; }
     public string ExporterVersion { get; } = "6.3";
-    public string SchemaVersion { get; } = "tick.v1";
+    // Bump the schema version to reflect addition of vbuy/vsell fields
+    // Increase schema version to reflect additional tick-level fields (bid/ask volumes,
+    // cumulative depth and midprice).  Schema versions should be updated whenever the
+    // structure of the emitted JSON changes to help downstream consumers handle
+    // backward compatibility.
+    public string SchemaVersion { get; } = "tick.v3";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -101,6 +106,16 @@ internal sealed class TickExporterCore : IDisposable
     }
 }
 
+// Tick payload now includes vbuy/vsell fields which represent the quantity of
+// each tick attributed to aggressive buys and sells.  For a buy trade
+// vbuy equals qty and vsell is null; for a sell trade vsell equals qty and vbuy
+// is null.  Adding these fields makes the tick export self‑sufficient for
+// computing directional metrics (e.g. VPIN) without reconstructing from side.
+// The TickPayload schema has been extended beyond the basic price, quantity and side to
+// include order book information (best bid/ask price and size), cumulative DOM depth
+// and a computed midprice.  When the ATAS SDK is unavailable these fields will be
+// null.  Downstream consumers can use these values to compute order book imbalance,
+// slippage and other microstructure metrics.
 internal sealed record TickPayload(
     string ts,
     string exchange,
@@ -108,8 +123,15 @@ internal sealed record TickPayload(
     decimal price,
     decimal qty,
     string side,
+    decimal? vbuy,
+    decimal? vsell,
     decimal? best_bid,
     decimal? best_ask,
+    decimal? bid_volume,
+    decimal? ask_volume,
+    decimal? cum_bid_depth,
+    decimal? cum_ask_depth,
+    decimal? mid_price,
     string? trade_id,
     string exporter_version,
     string schema_version
@@ -293,15 +315,71 @@ public class TickTapeExporter : Indicator
         var utcTime = ResolveTradeTime(trade);
         var iso = utcTime.ToString("O", CultureInfo.InvariantCulture);
 
+        // Derive quantity and side once to allow calculation of vbuy/vsell.  vbuy
+        // equals qty for buy trades, vsell equals qty for sell trades.  When the
+        // side is unknown both are left null.
+        var qty = GetDecimalProperty(trade, "Volume") ?? 0m;
+        var side = ResolveSide(trade);
+        decimal? vbuy = null;
+        decimal? vsell = null;
+        if (string.Equals(side, "buy", System.StringComparison.OrdinalIgnoreCase))
+        {
+            vbuy = qty;
+        }
+        else if (string.Equals(side, "sell", System.StringComparison.OrdinalIgnoreCase))
+        {
+            vsell = qty;
+        }
+
+        // Extract best bid and ask prices and volumes.  These may not be present on
+        // every data provider; GetDecimalProperty gracefully returns null if the
+        // property is missing.  The volume on the bid/ask represents the size
+        // resting at the top of the book at the time of the trade.  Additional
+        // depth metrics are retrieved from the MarketDepthInfo object when
+        // available.  A mid price is computed from the best bid and ask.
+        var bestBid = GetDecimalProperty(trade, "Bid");
+        var bestAsk = GetDecimalProperty(trade, "Ask");
+        var bidVol = GetDecimalProperty(trade, "BidVolume");
+        var askVol = GetDecimalProperty(trade, "AskVolume");
+        decimal? cumBidDepth = null;
+        decimal? cumAskDepth = null;
+        decimal? midPrice = null;
+#if !NO_ATAS_SDK
+        try
+        {
+            var md = MarketDepthInfo;
+            if (md != null)
+            {
+                cumBidDepth = md.CumulativeDomBids;
+                cumAskDepth = md.CumulativeDomAsks;
+            }
+        }
+        catch
+        {
+            // ignore any issues retrieving market depth
+        }
+#endif
+        if (bestBid.HasValue && bestAsk.HasValue)
+        {
+            midPrice = (bestBid.Value + bestAsk.Value) / 2m;
+        }
+
         var payload = new TickPayload(
             iso,
             string.IsNullOrWhiteSpace(Exchange) ? "BINANCE_FUTURES" : Exchange,
             symbol!,
             GetDecimalProperty(trade, "Price") ?? 0m,
-            GetDecimalProperty(trade, "Volume") ?? 0m,
-            ResolveSide(trade),
-            GetDecimalProperty(trade, "Bid"),
-            GetDecimalProperty(trade, "Ask"),
+            qty,
+            side,
+            vbuy,
+            vsell,
+            bestBid,
+            bestAsk,
+            bidVol,
+            askVol,
+            cumBidDepth,
+            cumAskDepth,
+            midPrice,
             GetStringProperty(trade, "Id"),
             _core.ExporterVersion,
             _core.SchemaVersion);

@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Collections;
+using System.Collections.Generic;
 using ATAS.Indicators.Technical;
 using ATAS.Types;
 #endif
@@ -25,7 +26,10 @@ internal sealed class BarExporterCore : IDisposable
     public int HeartbeatEveryMs { get; set; } = 5000;
     public bool PartitionByHour { get; set; }
     public string ExporterVersion { get; } = "6.3";
-    public string SchemaVersion { get; } = "bar_1m.v6_3";
+    // Bump the schema version to reflect the addition of vbuy/vsell fields and new
+    // DOM and open interest fields.  Updating the schema version signals
+    // downstream consumers to handle the additional columns.
+    public string SchemaVersion { get; } = "bar_1m.v6_5";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -101,6 +105,16 @@ internal sealed class BarExporterCore : IDisposable
     }
 }
 
+// The bar payload now includes separate buy and sell volume fields (vbuy/vsell).
+// These fields allow downstream processors to distinguish between aggressive
+// buying and selling pressure within each one‑minute bar.  Without the ATAS
+// SDK installed (see NO_ATAS_SDK), these values will be null.  When the SDK
+// is present the values are aggregated from incoming trade events.
+// The BarPayload has been extended to include open interest and aggregated DOM
+// statistics (cumulative bid and ask depth).  These metrics provide
+// information about the state of the order book and the positioning of market
+// participants over each minute bar.  When the ATAS SDK is unavailable these
+// fields will be null.
 internal sealed record BarPayload(
     string timestamp,
     string timestamp_utc,
@@ -117,6 +131,11 @@ internal sealed record BarPayload(
     decimal? bar_vpo_vol,
     decimal? bar_vpo_loc,
     string? bar_vpo_side,
+    decimal? vbuy,
+    decimal? vsell,
+    decimal? oi,
+    decimal? cum_bid_depth,
+    decimal? cum_ask_depth,
     string exporter_version,
     string schema_version
 );
@@ -202,6 +221,20 @@ public class Bar1mExporter : IDisposable
 #else
 public class Bar1mExporter : Indicator
 {
+    // Track buy/sell volume at the granularity of bar close times (minute precision).
+    // The key is the UTC time of the bar close; values are the cumulative
+    // aggressive buy and sell volumes seen via OnNewTrade.  This dictionary is
+    // cleared lazily in BuildPayload to avoid unbounded growth.  When NO_ATAS_SDK
+    // is defined this collection remains empty because OnNewTrade is not
+    // available.
+    private readonly System.Collections.Generic.Dictionary<DateTime, (decimal Buy, decimal Sell)> _volumeBySide = new();
+
+    // Track cumulative DOM depth (bid and ask) by minute.  When MarketDepthChanged
+    // fires we record the most recent depth values keyed by the minute.  These
+    // values are exported in the bar payload via the cum_bid_depth and
+    // cum_ask_depth fields.  When NO_ATAS_SDK is defined this collection
+    // remains empty because MarketDepthChanged is not available.
+    private readonly System.Collections.Generic.Dictionary<DateTime, (decimal CumBids, decimal CumAsks)> _depthByMinute = new();
     private readonly BarExporterCore _core = new();
     private string _outputRoot = PathHelper.DefaultOutputRoot;
     private int _flushBatchSize = 200;
@@ -278,6 +311,83 @@ public class Bar1mExporter : Indicator
         _core.Configure(_outputRoot, _flushBatchSize, _flushIntervalMs, _heartbeatEveryMs, _partitionByHour);
     }
 
+    /// <summary>
+    /// Handles each new trade and aggregates its volume into buy/sell buckets.
+    /// This method is called by ATAS when a new tick is received.  It is only
+    /// compiled when the ATAS SDK is available (NO_ATAS_SDK is not defined).
+    /// </summary>
+    protected override void OnNewTrade(ATAS.Types.MarketDataArg arg)
+    {
+        if (arg?.Trade == null)
+        {
+            return;
+        }
+
+        var trade = arg.Trade;
+        // Resolve the UTC time of the trade.  It may be represented as a DateTime
+        // or a Unix millisecond timestamp.  The helper returns a UTC DateTime.
+        var utcTime = ResolveTradeTime(trade);
+        // Round the time down to the start of its minute.  The exporter records
+        // bars as right‑closed intervals ending at minute close.  We accumulate
+        // volume for the current minute based on the trade time.
+        var minute = new DateTime(utcTime.Year, utcTime.Month, utcTime.Day, utcTime.Hour, utcTime.Minute, 0, DateTimeKind.Utc);
+        // Determine whether this trade is a buy or sell.  If the side cannot be
+        // resolved the trade is treated as a buy by default.
+        var side = ResolveSide(trade);
+        var volume = GetDecimalProperty(trade, "Volume") ?? 0m;
+        lock (_volumeBySide)
+        {
+            if (!_volumeBySide.TryGetValue(minute, out var entry))
+            {
+                entry = (0m, 0m);
+            }
+            if (string.Equals(side, "sell", System.StringComparison.OrdinalIgnoreCase))
+            {
+                entry.Sell += volume;
+            }
+            else
+            {
+                entry.Buy += volume;
+            }
+            _volumeBySide[minute] = entry;
+        }
+    }
+
+    /// <summary>
+    /// Handles changes in the market depth (DOM) and captures the cumulative
+    /// bid and ask volumes at each minute boundary.  This method is only
+    /// compiled when the ATAS SDK is available.  It uses the current UTC
+    /// timestamp of the change event to determine which minute bucket to
+    /// update.  If MarketDepthInfo is unavailable or throws, the update is
+    /// skipped.
+    /// </summary>
+    protected override void MarketDepthChanged(ATAS.Types.MarketDataArg arg)
+    {
+        // Determine the current time of the market depth update.  We use
+        // DateTime.UtcNow because MarketDepthChanged does not expose a time
+        // property directly on the argument.  If the provider sets arg.Time
+        // you could use ResolveTradeTime as with trades.
+        var utcNow = DateTime.UtcNow;
+        var minute = new DateTime(utcNow.Year, utcNow.Month, utcNow.Day, utcNow.Hour, utcNow.Minute, 0, DateTimeKind.Utc);
+        try
+        {
+            var md = MarketDepthInfo;
+            if (md != null)
+            {
+                var bids = md.CumulativeDomBids;
+                var asks = md.CumulativeDomAsks;
+                lock (_depthByMinute)
+                {
+                    _depthByMinute[minute] = (bids, asks);
+                }
+            }
+        }
+        catch
+        {
+            // ignore exceptions retrieving market depth
+        }
+    }
+
     protected override void OnCalculate(int bar, decimal value)
     {
         if (bar < 0 || bar >= Count)
@@ -320,6 +430,44 @@ public class Bar1mExporter : Indicator
         decimal? barVpoLoc = TryGetIndicatorDecimal("BarVPOLocation", bar);
         string? barVpoSide = TryGetIndicatorString("BarVPOSide", bar);
 
+        // Extract the aggregated buy and sell volume for the current minute.  We
+        // clear the entry after retrieving it to prevent memory growth across
+        // subsequent bars.
+        decimal? vbuy = null;
+        decimal? vsell = null;
+        lock (_volumeBySide)
+        {
+            if (_volumeBySide.TryGetValue(minuteClose, out var entry))
+            {
+                vbuy = entry.Buy;
+                vsell = entry.Sell;
+                _volumeBySide.Remove(minuteClose);
+            }
+        }
+
+        // Extract the last observed DOM cumulative depth for the current minute.  We
+        // clear the entry after retrieving it to prevent memory growth.  These
+        // values represent the total bid and ask volume in the order book at a
+        // point during the minute.  If the DOM has not been updated during
+        // this minute the fields remain null.
+        decimal? cumBidDepth = null;
+        decimal? cumAskDepth = null;
+        lock (_depthByMinute)
+        {
+            if (_depthByMinute.TryGetValue(minuteClose, out var depth))
+            {
+                cumBidDepth = depth.CumBids;
+                cumAskDepth = depth.CumAsks;
+                _depthByMinute.Remove(minuteClose);
+            }
+        }
+
+        // Retrieve open interest (OI) if available.  Some data providers expose
+        // this as the "OI" property on a candle.  The GetCandleValue helper
+        // gracefully returns null if the property is missing.  OI provides
+        // insight into the number of open contracts.
+        decimal? oi = GetCandleValue(bar, "OI");
+
         var isoTimestamp = minuteClose.ToString("O", CultureInfo.InvariantCulture);
 
         return new BarPayload(
@@ -338,9 +486,107 @@ public class Bar1mExporter : Indicator
             barVpoVol,
             barVpoLoc,
             barVpoSide,
+            vbuy,
+            vsell,
+            oi,
+            cumBidDepth,
+            cumAskDepth,
             _core.ExporterVersion,
             _core.SchemaVersion);
     }
+
+    #region Trade helpers
+    // The following helper methods mirror those used by TickTapeExporter.  They are
+    // duplicated here rather than shared via a common base class to avoid
+    // unnecessary refactoring and keep the impact localized.  Should future
+    // indicators also need these helpers they could be extracted into a shared
+    // utility class.
+
+    private static DateTime ResolveTradeTime(object trade)
+    {
+        var prop = trade.GetType().GetProperty("Time", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+        if (prop != null)
+        {
+            var value = prop.GetValue(trade);
+            if (value is DateTime dt)
+            {
+                return DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+            }
+            if (value is long ms)
+            {
+                var seconds = ms / 1000;
+                var remainder = ms % 1000;
+                return DateTimeOffset.FromUnixTimeSeconds(seconds).UtcDateTime.AddMilliseconds(remainder);
+            }
+        }
+        return DateTime.UtcNow;
+    }
+
+    private static decimal? GetDecimalProperty(object trade, string name)
+    {
+        var prop = trade.GetType().GetProperty(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+        if (prop == null)
+        {
+            return null;
+        }
+        try
+        {
+            var value = prop.GetValue(trade);
+            if (value == null)
+            {
+                return null;
+            }
+            return value switch
+            {
+                decimal d => d,
+                double d => (decimal)d,
+                float f => (decimal)f,
+                long l => l,
+                int i => i,
+                string s when decimal.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var result) => result,
+                _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture)
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string ResolveSide(object trade)
+    {
+        var sideProp = trade.GetType().GetProperty("Side", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+        if (sideProp != null)
+        {
+            var value = sideProp.GetValue(trade)?.ToString();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                var normalized = value.Trim().ToLowerInvariant();
+                if (normalized == "buy" || normalized == "sell")
+                {
+                    return normalized;
+                }
+            }
+        }
+        var isBuyProp = trade.GetType().GetProperty("IsBuy", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+        if (isBuyProp != null)
+        {
+            try
+            {
+                var value = isBuyProp.GetValue(trade);
+                if (value != null)
+                {
+                    return Convert.ToBoolean(value, CultureInfo.InvariantCulture) ? "buy" : "sell";
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+        return "buy";
+    }
+    #endregion
 
     private decimal? GetCandleValue(int bar, string property)
     {
