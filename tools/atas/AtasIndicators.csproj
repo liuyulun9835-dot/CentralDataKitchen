@@ -9,6 +9,8 @@
     <Deterministic>false</Deterministic>
     <OutputType>Library</OutputType>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,11 +24,6 @@
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
-
-  <PropertyGroup>
-    <DefineConstants Condition="'$(DefineConstants)' == ''">TRACE</DefineConstants>
-    <DefineConstants>$(DefineConstants);NO_ATAS_SDK</DefineConstants>
-  </PropertyGroup>
 
   <PropertyGroup>
     <!-- 允许环境变量覆盖 -->
