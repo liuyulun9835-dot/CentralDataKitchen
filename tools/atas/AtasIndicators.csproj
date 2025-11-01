@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net6.0</TargetFramework>
+    <TargetFramework>net481</TargetFramework>
     <AssemblyName>CentralDataKitchen.Tools.ATAS</AssemblyName>
     <RootNamespace>CentralDataKitchen.Tools.ATAS</RootNamespace>
     <ImplicitUsings>disable</ImplicitUsings>
@@ -8,7 +8,20 @@
     <LangVersion>latest</LangVersion>
     <Deterministic>false</Deterministic>
     <OutputType>Library</OutputType>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="ATAS.Indicators" HintPath="C:\Program Files (x86)\ATAS Platform\ATAS.Indicators.dll" />
+    <Reference Include="ATAS.Indicators.Technical" HintPath="C:\Program Files (x86)\ATAS Platform\ATAS.Indicators.Technical.dll" />
+    <Reference Include="ATAS.Types" HintPath="C:\Program Files (x86)\ATAS Platform\ATAS.Types.dll" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.ComponentModel.DataAnnotations" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
 
   <PropertyGroup>
     <DefineConstants Condition="'$(DefineConstants)' == ''">TRACE</DefineConstants>
