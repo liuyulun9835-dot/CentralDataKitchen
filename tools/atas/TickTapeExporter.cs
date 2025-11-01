@@ -1,12 +1,13 @@
 using System;
 using System.IO;
-using System.Text.Json;
-#if !NO_ATAS_SDK
-using System.ComponentModel.DataAnnotations;
+using System.Text;
 using System.Globalization;
+using System.ComponentModel.DataAnnotations;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
+using ATAS.Indicators;
 using ATAS.Indicators.Technical;
 using ATAS.Types;
-#endif
 
 namespace CentralDataKitchen.Tools.ATAS;
 
@@ -31,10 +32,11 @@ internal sealed class TickExporterCore : IDisposable
     // backward compatibility.
     public string SchemaVersion { get; } = "tick.v3";
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
     {
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        WriteIndented = false
+        ContractResolver = new CamelCasePropertyNamesContractResolver(),
+        NullValueHandling = NullValueHandling.Ignore,
+        Formatting = Formatting.None
     };
 
     public void Configure(string outputRoot, int flushBatchSize, int flushIntervalMs, int heartbeatEveryMs, bool partitionByHour)
@@ -88,7 +90,7 @@ internal sealed class TickExporterCore : IDisposable
                 _writer = new BufferedJsonlWriter(path, FlushBatchSize, FlushIntervalMs);
             }
 
-            var json = JsonSerializer.Serialize(payload, JsonOptions);
+            var json = JsonConvert.SerializeObject(payload, JsonSettings);
             _writer!.Enqueue(json);
         }
     }
@@ -116,107 +118,63 @@ internal sealed class TickExporterCore : IDisposable
 // and a computed midprice.  When the ATAS SDK is unavailable these fields will be
 // null.  Downstream consumers can use these values to compute order book imbalance,
 // slippage and other microstructure metrics.
-internal sealed record TickPayload(
-    string ts,
-    string exchange,
-    string symbol,
-    decimal price,
-    decimal qty,
-    string side,
-    decimal? vbuy,
-    decimal? vsell,
-    decimal? best_bid,
-    decimal? best_ask,
-    decimal? bid_volume,
-    decimal? ask_volume,
-    decimal? cum_bid_depth,
-    decimal? cum_ask_depth,
-    decimal? mid_price,
-    string? trade_id,
-    string exporter_version,
-    string schema_version
-);
-
-#if NO_ATAS_SDK
-public class TickTapeExporter : IDisposable
+internal sealed class TickPayload
 {
-    private readonly TickExporterCore _core = new();
-    private string _outputRoot = PathHelper.DefaultOutputRoot;
-    private int _flushBatchSize = 200;
-    private int _flushIntervalMs = 100;
-    private int _heartbeatEveryMs = 5000;
-    private bool _partitionByHour = true;
+    [JsonProperty("ts")]
+    public string Timestamp { get; set; } = string.Empty;
 
-    public string Exchange { get; set; } = "BINANCE_FUTURES";
+    [JsonProperty("exchange")]
+    public string Exchange { get; set; } = string.Empty;
+
+    [JsonProperty("symbol")]
     public string Symbol { get; set; } = string.Empty;
 
-    public string OutputRoot
-    {
-        get => _outputRoot;
-        set
-        {
-            _outputRoot = string.IsNullOrWhiteSpace(value) ? PathHelper.DefaultOutputRoot : value;
-            ApplyConfig();
-        }
-    }
+    [JsonProperty("price")]
+    public decimal Price { get; set; }
 
-    public int FlushBatchSize
-    {
-        get => _flushBatchSize;
-        set
-        {
-            _flushBatchSize = Math.Max(1, value);
-            ApplyConfig();
-        }
-    }
+    [JsonProperty("qty")]
+    public decimal Quantity { get; set; }
 
-    public int FlushIntervalMs
-    {
-        get => _flushIntervalMs;
-        set
-        {
-            _flushIntervalMs = Math.Max(10, value);
-            ApplyConfig();
-        }
-    }
+    [JsonProperty("side")]
+    public string Side { get; set; } = string.Empty;
 
-    public int HeartbeatEveryMs
-    {
-        get => _heartbeatEveryMs;
-        set
-        {
-            _heartbeatEveryMs = Math.Max(1000, value);
-            ApplyConfig();
-        }
-    }
+    [JsonProperty("vbuy")]
+    public decimal? VolumeBuy { get; set; }
 
-    public bool PartitionByHour
-    {
-        get => _partitionByHour;
-        set
-        {
-            _partitionByHour = value;
-            ApplyConfig();
-        }
-    }
+    [JsonProperty("vsell")]
+    public decimal? VolumeSell { get; set; }
 
-    public TickTapeExporter()
-    {
-        SafeLogger.Info("TickTapeExporter compiled without ATAS SDK (NO_ATAS_SDK).");
-        ApplyConfig();
-    }
+    [JsonProperty("best_bid")]
+    public decimal? BestBid { get; set; }
 
-    private void ApplyConfig()
-    {
-        _core.Configure(_outputRoot, _flushBatchSize, _flushIntervalMs, _heartbeatEveryMs, _partitionByHour);
-    }
+    [JsonProperty("best_ask")]
+    public decimal? BestAsk { get; set; }
 
-    public void Dispose()
-    {
-        _core.Dispose();
-    }
+    [JsonProperty("bid_volume")]
+    public decimal? BidVolume { get; set; }
+
+    [JsonProperty("ask_volume")]
+    public decimal? AskVolume { get; set; }
+
+    [JsonProperty("cum_bid_depth")]
+    public decimal? CumulativeBidDepth { get; set; }
+
+    [JsonProperty("cum_ask_depth")]
+    public decimal? CumulativeAskDepth { get; set; }
+
+    [JsonProperty("mid_price")]
+    public decimal? MidPrice { get; set; }
+
+    [JsonProperty("trade_id")]
+    public string? TradeId { get; set; }
+
+    [JsonProperty("exporter_version")]
+    public string ExporterVersion { get; set; } = string.Empty;
+
+    [JsonProperty("schema_version")]
+    public string SchemaVersion { get; set; } = string.Empty;
 }
-#else
+
 public class TickTapeExporter : Indicator
 {
     private readonly TickExporterCore _core = new();
@@ -344,7 +302,6 @@ public class TickTapeExporter : Indicator
         decimal? cumBidDepth = null;
         decimal? cumAskDepth = null;
         decimal? midPrice = null;
-#if !NO_ATAS_SDK
         try
         {
             var md = MarketDepthInfo;
@@ -358,31 +315,32 @@ public class TickTapeExporter : Indicator
         {
             // ignore any issues retrieving market depth
         }
-#endif
         if (bestBid.HasValue && bestAsk.HasValue)
         {
             midPrice = (bestBid.Value + bestAsk.Value) / 2m;
         }
 
-        var payload = new TickPayload(
-            iso,
-            string.IsNullOrWhiteSpace(Exchange) ? "BINANCE_FUTURES" : Exchange,
-            symbol!,
-            GetDecimalProperty(trade, "Price") ?? 0m,
-            qty,
-            side,
-            vbuy,
-            vsell,
-            bestBid,
-            bestAsk,
-            bidVol,
-            askVol,
-            cumBidDepth,
-            cumAskDepth,
-            midPrice,
-            GetStringProperty(trade, "Id"),
-            _core.ExporterVersion,
-            _core.SchemaVersion);
+        var payload = new TickPayload
+        {
+            Timestamp = iso,
+            Exchange = string.IsNullOrWhiteSpace(Exchange) ? "BINANCE_FUTURES" : Exchange,
+            Symbol = symbol!,
+            Price = GetDecimalProperty(trade, "Price") ?? 0m,
+            Quantity = qty,
+            Side = side,
+            VolumeBuy = vbuy,
+            VolumeSell = vsell,
+            BestBid = bestBid,
+            BestAsk = bestAsk,
+            BidVolume = bidVol,
+            AskVolume = askVol,
+            CumulativeBidDepth = cumBidDepth,
+            CumulativeAskDepth = cumAskDepth,
+            MidPrice = midPrice,
+            TradeId = GetStringProperty(trade, "Id"),
+            ExporterVersion = _core.ExporterVersion,
+            SchemaVersion = _core.SchemaVersion
+        };
 
         ApplyConfig();
         _core.WriteTick(symbol!, utcTime, payload);
@@ -491,4 +449,3 @@ public class TickTapeExporter : Indicator
         _core.Dispose();
     }
 }
-#endif

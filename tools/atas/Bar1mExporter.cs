@@ -1,14 +1,13 @@
 using System;
 using System.IO;
-using System.Text.Json;
-#if !NO_ATAS_SDK
-using System.ComponentModel.DataAnnotations;
+using System.Text;
 using System.Globalization;
-using System.Collections;
-using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
+using ATAS.Indicators;
 using ATAS.Indicators.Technical;
 using ATAS.Types;
-#endif
 
 namespace CentralDataKitchen.Tools.ATAS;
 
@@ -31,10 +30,11 @@ internal sealed class BarExporterCore : IDisposable
     // downstream consumers to handle the additional columns.
     public string SchemaVersion { get; } = "bar_1m.v6_5";
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
     {
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        WriteIndented = false
+        ContractResolver = new CamelCasePropertyNamesContractResolver(),
+        NullValueHandling = NullValueHandling.Ignore,
+        Formatting = Formatting.None
     };
 
     public void Configure(string outputRoot, int flushBatchSize, int flushIntervalMs, int heartbeatEveryMs, bool partitionByHour)
@@ -87,7 +87,7 @@ internal sealed class BarExporterCore : IDisposable
                 _writer = new BufferedJsonlWriter(path, FlushBatchSize, FlushIntervalMs);
             }
 
-            var json = JsonSerializer.Serialize(payload, JsonOptions);
+            var json = JsonConvert.SerializeObject(payload, JsonSettings);
             _writer!.Enqueue(json);
         }
     }
@@ -115,110 +115,75 @@ internal sealed class BarExporterCore : IDisposable
 // information about the state of the order book and the positioning of market
 // participants over each minute bar.  When the ATAS SDK is unavailable these
 // fields will be null.
-internal sealed record BarPayload(
-    string timestamp,
-    string timestamp_utc,
-    decimal open,
-    decimal high,
-    decimal low,
-    decimal close,
-    decimal volume,
-    decimal? cvd,
-    decimal? vah,
-    decimal? val,
-    decimal? poc,
-    decimal? bar_vpo_price,
-    decimal? bar_vpo_vol,
-    decimal? bar_vpo_loc,
-    string? bar_vpo_side,
-    decimal? vbuy,
-    decimal? vsell,
-    decimal? oi,
-    decimal? cum_bid_depth,
-    decimal? cum_ask_depth,
-    string exporter_version,
-    string schema_version
-);
-
-#if NO_ATAS_SDK
-public class Bar1mExporter : IDisposable
+internal sealed class BarPayload
 {
-    private readonly BarExporterCore _core = new();
-    private string _outputRoot = PathHelper.DefaultOutputRoot;
-    private int _flushBatchSize = 200;
-    private int _flushIntervalMs = 100;
-    private int _heartbeatEveryMs = 5000;
-    private bool _partitionByHour;
+    [JsonProperty("timestamp")]
+    public string Timestamp { get; set; } = string.Empty;
 
-    public string OutputRoot
-    {
-        get => _outputRoot;
-        set
-        {
-            _outputRoot = string.IsNullOrWhiteSpace(value) ? PathHelper.DefaultOutputRoot : value;
-            ApplyConfig();
-        }
-    }
+    [JsonProperty("timestamp_utc")]
+    public string TimestampUtc { get; set; } = string.Empty;
 
-    public int FlushBatchSize
-    {
-        get => _flushBatchSize;
-        set
-        {
-            _flushBatchSize = Math.Max(1, value);
-            ApplyConfig();
-        }
-    }
+    [JsonProperty("open")]
+    public decimal Open { get; set; }
 
-    public int FlushIntervalMs
-    {
-        get => _flushIntervalMs;
-        set
-        {
-            _flushIntervalMs = Math.Max(10, value);
-            ApplyConfig();
-        }
-    }
+    [JsonProperty("high")]
+    public decimal High { get; set; }
 
-    public int HeartbeatEveryMs
-    {
-        get => _heartbeatEveryMs;
-        set
-        {
-            _heartbeatEveryMs = Math.Max(1000, value);
-            ApplyConfig();
-        }
-    }
+    [JsonProperty("low")]
+    public decimal Low { get; set; }
 
-    public bool PartitionByHour
-    {
-        get => _partitionByHour;
-        set
-        {
-            _partitionByHour = value;
-            ApplyConfig();
-        }
-    }
+    [JsonProperty("close")]
+    public decimal Close { get; set; }
 
-    public string Symbol { get; set; } = string.Empty;
+    [JsonProperty("volume")]
+    public decimal Volume { get; set; }
 
-    public Bar1mExporter()
-    {
-        SafeLogger.Info("Bar1mExporter compiled without ATAS SDK (NO_ATAS_SDK).");
-        ApplyConfig();
-    }
+    [JsonProperty("cvd")]
+    public decimal? Cvd { get; set; }
 
-    private void ApplyConfig()
-    {
-        _core.Configure(_outputRoot, _flushBatchSize, _flushIntervalMs, _heartbeatEveryMs, _partitionByHour);
-    }
+    [JsonProperty("vah")]
+    public decimal? ValueAreaHigh { get; set; }
 
-    public void Dispose()
-    {
-        _core.Dispose();
-    }
+    [JsonProperty("val")]
+    public decimal? ValueAreaLow { get; set; }
+
+    [JsonProperty("poc")]
+    public decimal? PointOfControl { get; set; }
+
+    [JsonProperty("bar_vpo_price")]
+    public decimal? BarVpoPrice { get; set; }
+
+    [JsonProperty("bar_vpo_vol")]
+    public decimal? BarVpoVolume { get; set; }
+
+    [JsonProperty("bar_vpo_loc")]
+    public decimal? BarVpoLocation { get; set; }
+
+    [JsonProperty("bar_vpo_side")]
+    public string? BarVpoSide { get; set; }
+
+    [JsonProperty("vbuy")]
+    public decimal? VolumeBuy { get; set; }
+
+    [JsonProperty("vsell")]
+    public decimal? VolumeSell { get; set; }
+
+    [JsonProperty("oi")]
+    public decimal? OpenInterest { get; set; }
+
+    [JsonProperty("cum_bid_depth")]
+    public decimal? CumulativeBidDepth { get; set; }
+
+    [JsonProperty("cum_ask_depth")]
+    public decimal? CumulativeAskDepth { get; set; }
+
+    [JsonProperty("exporter_version")]
+    public string ExporterVersion { get; set; } = string.Empty;
+
+    [JsonProperty("schema_version")]
+    public string SchemaVersion { get; set; } = string.Empty;
 }
-#else
+
 public class Bar1mExporter : Indicator
 {
     // Track buy/sell volume at the granularity of bar close times (minute precision).
@@ -470,29 +435,31 @@ public class Bar1mExporter : Indicator
 
         var isoTimestamp = minuteClose.ToString("O", CultureInfo.InvariantCulture);
 
-        return new BarPayload(
-            isoTimestamp,
-            isoTimestamp,
-            open,
-            high,
-            low,
-            close,
-            volume,
-            cvd,
-            vah,
-            val,
-            poc,
-            barVpoPrice,
-            barVpoVol,
-            barVpoLoc,
-            barVpoSide,
-            vbuy,
-            vsell,
-            oi,
-            cumBidDepth,
-            cumAskDepth,
-            _core.ExporterVersion,
-            _core.SchemaVersion);
+        return new BarPayload
+        {
+            Timestamp = isoTimestamp,
+            TimestampUtc = isoTimestamp,
+            Open = open,
+            High = high,
+            Low = low,
+            Close = close,
+            Volume = volume,
+            Cvd = cvd,
+            ValueAreaHigh = vah,
+            ValueAreaLow = val,
+            PointOfControl = poc,
+            BarVpoPrice = barVpoPrice,
+            BarVpoVolume = barVpoVol,
+            BarVpoLocation = barVpoLoc,
+            BarVpoSide = barVpoSide,
+            VolumeBuy = vbuy,
+            VolumeSell = vsell,
+            OpenInterest = oi,
+            CumulativeBidDepth = cumBidDepth,
+            CumulativeAskDepth = cumAskDepth,
+            ExporterVersion = _core.ExporterVersion,
+            SchemaVersion = _core.SchemaVersion
+        };
     }
 
     #region Trade helpers
@@ -737,4 +704,3 @@ public class Bar1mExporter : Indicator
         _core.Dispose();
     }
 }
-#endif
